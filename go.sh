@@ -101,7 +101,8 @@ build_transaction() {
         --value "$value" \
         --nonce "$nonce" \
         --gas-price "$gas_price" \
-        --gas-limit "$gas_limit"
+        --gas-limit "$gas_limit" \
+        --priority-gas-price 1000000
 }
 
 # Utility function to create the bundle.
@@ -174,7 +175,8 @@ GAS_TO_FILL=$(( GAS_PRICE * TRANSFER_TOKEN_GAS ))
 echo "GAS TO FILL: $(cast to-unit $GAS_TO_FILL ether)"
 
 # Get the next block number.
-BLOCK_NUMBER=$(( $(cast block-number --rpc-url "$PROVIDER_URL") + 1 ))
+BLOCK_NUMBER=$(( $(cast block-number --rpc-url "$MAINNET_RPC_URL") + 4 ))
+echo "Block Number to target: $BLOCK_NUMBER"
 
 # Retrieve the account nonces for the gas and victim wallet.
 GAS_NONCE_1=$(cast nonce "$GAS_WALLET" --rpc-url "$PROVIDER_URL")
@@ -239,27 +241,27 @@ TX5=$(build_transaction "$VICTIM_PK" "$WSTETH_ADDRESS" 0 "$VICTIM_NONCE" "$TRANS
 
 # Test publish these transactions to anvil
 
-BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
-echo "Victim before gas eth balance: $BALANCE"
+# BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
+# echo "Victim before gas eth balance: $BALANCE"
 
-cast publish -vvvv --rpc-url $PROVIDER_URL $TX4
+# cast publish -vvvv --rpc-url $PROVIDER_URL $TX4
 
-BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
-echo "Victim after gas eth balance: $BALANCE"
+# BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
+# echo "Victim after gas eth balance: $BALANCE"
 
-cast publish -vvvv --rpc-url $PROVIDER_URL $TX5
+# cast publish -vvvv --rpc-url $PROVIDER_URL $TX5
 
-TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$VICTIM_WALLET" --rpc-url $PROVIDER_URL))
-echo ""
-echo "Only $TOKEN_AMOUNT worth of wstETH remaining in compromised wallet after extraction tx."
-echo ""
-BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
-echo "Victim address remaining eth balance: $BALANCE"
+# TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$VICTIM_WALLET" --rpc-url $PROVIDER_URL))
+# echo ""
+# echo "Only $TOKEN_AMOUNT worth of wstETH remaining in compromised wallet after extraction tx."
+# echo ""
+# BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
+# echo "Victim address remaining eth balance: $BALANCE"
 
-TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$SAFE_ADDRESS" --rpc-url $PROVIDER_URL))
-echo ""
-echo " $TOKEN_AMOUNT worth of wstETH in the clean address."
-echo ""
+# TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$SAFE_ADDRESS" --rpc-url $PROVIDER_URL))
+# echo ""
+# echo " $TOKEN_AMOUNT worth of wstETH in the clean address."
+# echo ""
 
 
 # Test transactions end here
@@ -284,10 +286,10 @@ echo -e "Bundle JSON:\n$BUNDLE_JSON"
 # echo "$BUNDLE_JSON" > bundle.json
 
 # Send the bundle.
-echo "Skipping bundle send."
+echo "Sending bundle."
 echo ""
 echo ""
-# send_bundle "$BUNDLE_JSON"
+#send_bundle "$BUNDLE_JSON"
 
 # To execute you need to set env vars
 # Run an anvil chain with `anvil --fork-url $(MAINNET_RPC_URL)`
