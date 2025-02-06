@@ -47,6 +47,12 @@ vars=(
     GAS_PK
     FLASHBOTS_SIGNATURE_PK
     TOKEN_CONTRACT
+    WSTETH_ADDRESS
+    OBOLLIDOSPLIT_ADDRESS
+    SPLITPROXY_ADDRESS
+    SPLITPROXY_ACCOUNTS
+    SPLITPROXY_AMOUNTS
+    SAFE_ADDRESS
 )
 
 # Check if the required environment variables are set.
@@ -147,48 +153,145 @@ send_bundle() {
 # CUSTOMISE ACCORDING TO YOUR NEEDS #
 #####################################
 
-# Main loop; customise as needed. Resubmits the bundle every 8 seconds.
-while true; do
-    # Retrieve and adjust the gas price by 20%.
-    GAS_PRICE=$(cast gas-price --rpc-url "$PROVIDER_URL")
-    GAS_PRICE=$(( (GAS_PRICE * 120) / 100 ))
+# This program relies on Anvil mainnet forking, to calculate balances for the bundle. 
+#
 
-    # Set the gas limits for the different transfers.
-    TRANSFER_ETH=21000
-    TRANSFER_TOKEN_GAS=80000
+echo "Program start: "
 
-    # Calculate the gas cost to fill and convert to ether.
-    GAS_TO_FILL=$(( GAS_PRICE * TRANSFER_TOKEN_GAS ))
-    echo "GAS TO FILL: $(cast to-unit $GAS_TO_FILL ether)"
+# Retrieve and adjust the gas price by 20%.
+GAS_PRICE=$(cast gas-price --rpc-url "$PROVIDER_URL")
+GAS_PRICE=$(( (GAS_PRICE * 120) / 100 ))
 
-    # Get the next block number.
-    BLOCK_NUMBER=$(( $(cast block-number --rpc-url "$PROVIDER_URL") + 1 ))
+# Set the gas limits for the different transfers.
+TRANSFER_ETH=21000
+TRANSFER_TOKEN_GAS=80000
+DISTRIBUTE_OLS_GAS=262000
+DISTRIBUTE_SPLITMAIN_GAS=250000
+WITHDRAW_SPLITMAIN_GAS=200000
 
-    # Retrieve the account nonces for the gas and victim wallet.
-    GAS_NONCE=$(cast nonce "$GAS_WALLET" --rpc-url "$PROVIDER_URL")
-    VICTIM_NONCE=$(cast nonce "$VICTIM_WALLET" --rpc-url "$PROVIDER_URL")
+# Calculate the gas cost to fill and convert to ether.
+GAS_TO_FILL=$(( GAS_PRICE * TRANSFER_TOKEN_GAS ))
+echo "GAS TO FILL: $(cast to-unit $GAS_TO_FILL ether)"
 
-    # Build the transactions.
-    # Example transfer of ETH to the victim wallet.
-    TX1=$(build_transaction "$GAS_PK" "$VICTIM_WALLET" "$GAS_TO_FILL" "$GAS_NONCE" "$TRANSFER_ETH" "$GAS_PRICE")
+# Get the next block number.
+BLOCK_NUMBER=$(( $(cast block-number --rpc-url "$PROVIDER_URL") + 1 ))
 
-    # Example transfer of 1 USDC (remember that USDC has 6 decimals) to rescue wallet.
-    TRANSFER_TOKEN_AMOUNT=1000000
-    RECIPIENT_WALLET="$GAS_WALLET"
-    PAYLOAD=$(cast calldata "transfer(address,uint256)" "$RECIPIENT_WALLET" "$TRANSFER_TOKEN_AMOUNT")
-    TX2=$(build_transaction "$VICTIM_PK" "$TOKEN_CONTRACT" 0 "$VICTIM_NONCE" "$TRANSFER_TOKEN_GAS" "$GAS_PRICE" "$PAYLOAD")
+# Retrieve the account nonces for the gas and victim wallet.
+GAS_NONCE_1=$(cast nonce "$GAS_WALLET" --rpc-url "$PROVIDER_URL")
+GAS_NONCE_2=$(( $GAS_NONCE_1+1))
+GAS_NONCE_3=$(( $GAS_NONCE_2+1))
+GAS_NONCE_4=$(( $GAS_NONCE_3+1))
+GAS_NONCE_5=$(( $GAS_NONCE_4+1))
+VICTIM_NONCE=$(cast nonce "$VICTIM_WALLET" --rpc-url "$PROVIDER_URL")
 
-    echo "TX1: $TX1"
-    echo "TX2: $TX2"
+echo "First Gas Nonce: $GAS_NONCE_1. Last gas nonce: $GAS_NONCE_5"
+echo "Vitim Nonce: $VICTIM_NONCE"
 
-    # Prepare the bundle JSON.
-    BUNDLE_JSON=$(create_bundle "$(cast to-hex $BLOCK_NUMBER)" "$TX1" "$TX2")
-    echo -e "Bundle JSON:\n$BUNDLE_JSON"
-    echo "$BUNDLE_JSON" > bundle.json
 
-    # Send the bundle.
-    send_bundle "$BUNDLE_JSON"
+# Build the transactions.
 
-    echo "Waiting for 8 seconds before next iteration..."
-    sleep 8
-done
+# 1. ObolLidoSplit.distribute()
+# 2. SplitMain.distributeERC20()
+# 3. SplitMain.withdraw()
+# 4. gas_wallet transfer eth -> victim
+# 5. wstEth.transfer(clean_address)
+
+
+#1. Distributing the stEth (wrapping it and pushing to splitter)
+PAYLOAD=$(cast calldata "distribute()")
+TX1=$(build_transaction "$GAS_PK" "$OBOLLIDOSPLIT_ADDRESS" 0 "$GAS_NONCE_1" "$DISTRIBUTE_OLS_GAS" "$GAS_PRICE" "$PAYLOAD")
+
+
+#2. Distributing the wstEth for withdraw
+PAYLOAD=$(cast calldata "distributeERC20(address,address,address[],uint32[],uint32,address)" "$SPLITPROXY_ADDRESS" "$WSTETH_ADDRESS" "$SPLITPROXY_ACCOUNTS" "$SPLITPROXY_AMOUNTS" "0" "0x0000000000000000000000000000000000000000")
+TX2=$(build_transaction "$GAS_PK" "$SPLITMAIN_ADDRESS" 0 "$GAS_NONCE_2" "$DISTRIBUTE_SPLITMAIN_GAS" "$GAS_PRICE" "$PAYLOAD")
+
+
+#3. Withdrawing wstEth from splitmain to victim address
+
+# Calculate wstEth to withdraw by simulating tx1 and tx2
+cast publish -vvvv --rpc-url $PROVIDER_URL $TX1
+cast publish -vvvv --rpc-url $PROVIDER_URL $TX2
+# Now read Victim's wstEth balance from SplitMain
+WSTETH_TO_WITHDRAW=$(cast to-dec $(cast call $SPLITMAIN_ADDRESS "getERC20Balance(address,address)" "$VICTIM_WALLET" "$WSTETH_ADDRESS" --rpc-url $PROVIDER_URL))
+echo ""
+echo "There is $WSTETH_TO_WITHDRAW worth of wstETH withdrawable from SplitMain."
+echo ""
+
+# Prep TX3 with that amount
+PAYLOAD=$(cast calldata "withdraw(address,uint256,address[])" "$VICTIM_WALLET" "0" "[$WSTETH_ADDRESS]")
+TX3=$(build_transaction "$GAS_PK" "$SPLITMAIN_ADDRESS" 0 "$GAS_NONCE_3" "$WITHDRAW_SPLITMAIN_GAS" "$GAS_PRICE" "$PAYLOAD")
+
+# Now simulate this tx to confirm withdrawable wstEth balance
+cast publish -vvvv --rpc-url $PROVIDER_URL $TX3
+
+TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$VICTIM_WALLET" --rpc-url $PROVIDER_URL))
+echo ""
+echo "Transferring $TOKEN_AMOUNT worth of wstETH out of compromised wallet. Should be identical or higher than prior number."
+echo ""
+
+# 4. Transfer of ETH to the victim wallet.
+TX4=$(build_transaction "$GAS_PK" "$VICTIM_WALLET" "$GAS_TO_FILL" "$GAS_NONCE_4" "$TRANSFER_ETH" "$GAS_PRICE")
+
+# 5. Transfer the wstEth from the victim wallet
+PAYLOAD=$(cast calldata "transfer(address,uint256)" "$SAFE_ADDRESS" "$TOKEN_AMOUNT")
+TX5=$(build_transaction "$VICTIM_PK" "$WSTETH_ADDRESS" 0 "$VICTIM_NONCE" "$TRANSFER_TOKEN_GAS" "$GAS_PRICE" "$PAYLOAD")
+
+# Test publish these transactions to anvil
+
+BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
+echo "Victim before gas eth balance: $BALANCE"
+
+cast publish -vvvv --rpc-url $PROVIDER_URL $TX4
+
+BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
+echo "Victim after gas eth balance: $BALANCE"
+
+cast publish -vvvv --rpc-url $PROVIDER_URL $TX5
+
+TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$VICTIM_WALLET" --rpc-url $PROVIDER_URL))
+echo ""
+echo "Only $TOKEN_AMOUNT worth of wstETH remaining in compromised wallet after extraction tx."
+echo ""
+BALANCE=$(cast balance $VICTIM_WALLET --rpc-url $PROVIDER_URL)
+echo "Victim address remaining eth balance: $BALANCE"
+
+TOKEN_AMOUNT=$(cast to-dec $(cast call $WSTETH_ADDRESS "balanceOf(address)" "$SAFE_ADDRESS" --rpc-url $PROVIDER_URL))
+echo ""
+echo " $TOKEN_AMOUNT worth of wstETH in the clean address."
+echo ""
+
+
+# Test transactions end here
+
+
+
+# List transactions
+echo ""
+echo ""
+echo "Transactions: "
+echo "TX1: $TX1"
+echo "TX2: $TX2"
+echo "TX3: $TX3"
+echo "TX4: $TX4"
+echo "TX5: $TX5"
+echo ""
+# echo "TX2: $TX2"
+
+# Prepare the bundle JSON.
+BUNDLE_JSON=$(create_bundle "$(cast to-hex $BLOCK_NUMBER)" "$TX1" "$TX2" "$TX3" "$TX4" "$TX5")
+echo -e "Bundle JSON:\n$BUNDLE_JSON"
+# echo "$BUNDLE_JSON" > bundle.json
+
+# Send the bundle.
+echo "Skipping bundle send."
+echo ""
+echo ""
+# send_bundle "$BUNDLE_JSON"
+
+# To execute you need to set env vars
+# Run an anvil chain with `anvil --fork-url $(MAINNET_RPC_URL)`
+# Test the script if you like
+# When validated, you uncomment send bundle and it will attempt to
+# broadcast to flashbots relay. If it doesn't make it into the exact
+# block you may have to run the script again. (Resetting anvil in between if you want the simulations to go how you expect)
